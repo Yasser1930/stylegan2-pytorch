@@ -163,7 +163,6 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
         if i > args.iter:
             print("Done!")
-
             break
 
         real_img = next(loader)
@@ -178,7 +177,6 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
         if args.augment:
             real_img_aug, _ = augment(real_img, ada_aug_p)
             fake_img, _ = augment(fake_img, ada_aug_p)
-
         else:
             real_img_aug = real_img
 
@@ -205,7 +203,6 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
             if args.augment:
                 real_img_aug, _ = augment(real_img, ada_aug_p)
-
             else:
                 real_img_aug = real_img
 
@@ -330,7 +327,8 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
 
 if __name__ == "__main__":
-    device = "cuda"
+    # Use CPU if CUDA is not available
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
 
@@ -340,7 +338,7 @@ if __name__ == "__main__":
         "--iter", type=int, default=800000, help="total training iterations"
     )
     parser.add_argument(
-        "--batch", type=int, default=16, help="batch sizes for each gpus"
+        "--batch", type=int, default=16, help="batch sizes for each gpu/worker"
     )
     parser.add_argument(
         "--n_sample",
@@ -419,7 +417,7 @@ if __name__ == "__main__":
         "--ada_length",
         type=int,
         default=500 * 1000,
-        help="target duraing to reach augmentation probability for adaptive augmentation",
+        help="target duration to reach augmentation probability for adaptive augmentation",
     )
     parser.add_argument(
         "--ada_every",
@@ -434,8 +432,12 @@ if __name__ == "__main__":
     args.distributed = n_gpu > 1
 
     if args.distributed:
-        torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend="nccl", init_method="env://")
+        if device == "cpu":
+            # Use "gloo" backend for CPU training.
+            torch.distributed.init_process_group(backend="gloo", init_method="env://")
+        else:
+            torch.cuda.set_device(args.local_rank)
+            torch.distributed.init_process_group(backend="nccl", init_method="env://")
         synchronize()
 
     args.latent = 512
@@ -483,7 +485,6 @@ if __name__ == "__main__":
         try:
             ckpt_name = os.path.basename(args.ckpt)
             args.start_iter = int(os.path.splitext(ckpt_name)[0])
-
         except ValueError:
             pass
 
@@ -495,19 +496,22 @@ if __name__ == "__main__":
         d_optim.load_state_dict(ckpt["d_optim"])
 
     if args.distributed:
-        generator = nn.parallel.DistributedDataParallel(
-            generator,
-            device_ids=[args.local_rank],
-            output_device=args.local_rank,
-            broadcast_buffers=False,
-        )
-
-        discriminator = nn.parallel.DistributedDataParallel(
-            discriminator,
-            device_ids=[args.local_rank],
-            output_device=args.local_rank,
-            broadcast_buffers=False,
-        )
+        if device == "cpu":
+            generator = nn.parallel.DistributedDataParallel(generator)
+            discriminator = nn.parallel.DistributedDataParallel(discriminator)
+        else:
+            generator = nn.parallel.DistributedDataParallel(
+                generator,
+                device_ids=[args.local_rank],
+                output_device=args.local_rank,
+                broadcast_buffers=False,
+            )
+            discriminator = nn.parallel.DistributedDataParallel(
+                discriminator,
+                device_ids=[args.local_rank],
+                output_device=args.local_rank,
+                broadcast_buffers=False,
+            )
 
     transform = transforms.Compose(
         [
